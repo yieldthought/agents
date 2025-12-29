@@ -1,0 +1,334 @@
+"""Functional bringup task for TTNN models."""
+
+import json
+import logging
+import os
+import re
+import shutil
+import tempfile
+
+from codexapi import Task
+
+from ..shell import tail_lines
+
+
+class SetupError(RuntimeError):
+    """Raised when setup steps fail before bringup begins."""
+
+
+def sanitize_branch_name(hf_model_id):
+    """Normalize HF model ids for branch names."""
+    value = hf_model_id.lower().replace("/", "-")
+    value = re.sub(r"[^a-z0-9._-]+", "-", value)
+    value = re.sub(r"-+", "-", value)
+    return value.strip("-")
+
+
+def parse_metrics(output):
+    """Parse YT_METRICS JSON from output."""
+    for line in output.splitlines():
+        if line.startswith("YT_METRICS="):
+            payload = line.split("=", 1)[1].strip()
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+class FunctionalBringupTask(Task):
+    """Bring up a model with checker-driven retries."""
+
+    def __init__(
+        self,
+        issue_number,
+        run_id,
+        hf_model_id,
+        hf_revision,
+        system,
+        top1_min,
+        top5_min,
+        max_attempts,
+        owner,
+        repo,
+        worker_name,
+        tmp_root,
+        prefill_len,
+        decode_len,
+        batch,
+        shell,
+        github,
+        logger=None,
+    ):
+        self.issue_number = issue_number
+        self.run_id = run_id
+        self.hf_model_id = hf_model_id
+        self.hf_revision = hf_revision
+        self.system = system
+        self.top1_min = top1_min
+        self.top5_min = top5_min
+        self.owner = owner
+        self.repo = repo
+        self.worker_name = worker_name
+        self.tmp_root = tmp_root
+        self.prefill_len = prefill_len
+        self.decode_len = decode_len
+        self.batch = batch
+        self.shell = shell
+        self.github = github
+        self.logger = logger or logging.getLogger(__name__)
+        self.repo_root = None
+        self.tmp_dir = None
+        self.branch = None
+        self.metrics = {}
+
+        prompt = _build_prompt(hf_model_id, hf_revision, system)
+        super().__init__(prompt, max_attempts=max_attempts, cwd=None)
+
+    def set_up(self):
+        """Prepare workspace, download weights, and reset hardware."""
+        self.tmp_dir = tempfile.mkdtemp(dir=self.tmp_root)
+        clone_dir = os.path.join(self.tmp_dir, self.repo)
+        repo_url = f"git@github.com:{self.owner}/{self.repo}.git"
+        self.shell.run(["git", "clone", repo_url], cwd=self.tmp_dir)
+        self.repo_root = clone_dir
+        self.cwd = self.repo_root
+        self.agent.cwd = self.repo_root
+
+        self.branch = _branch_name(self.issue_number, self.hf_model_id)
+        remote = self.shell.run(
+            ["git", "ls-remote", "--heads", "origin", self.branch],
+            cwd=self.repo_root,
+        )
+        if remote.stdout.strip():
+            raise SetupError(f"Branch already exists: {self.branch}")
+
+        self.shell.run(["git", "checkout", "-b", self.branch], cwd=self.repo_root)
+        self._check_prereqs()
+        self._download_weights()
+        self._reset_hardware()
+
+    def tear_down(self):
+        """Clean up the temp directory."""
+        if self.tmp_dir and os.path.isdir(self.tmp_dir):
+            shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def check(self):
+        """Run tests and evals; return an error string if any fail."""
+        steps = [
+            ("pytest", ["python", "-m", "pytest", "-q"], False),
+            ("hf", self._eval_command("hf", None), True),
+            ("tt-trace-off", self._eval_command("tt", 0), True),
+            ("tt-trace-on", self._eval_command("tt", 1), True),
+        ]
+        for name, cmd, expect_metrics in steps:
+            result = self.shell.run(cmd, cwd=self.repo_root, check=False)
+            if result.returncode != 0:
+                error = _format_failure(cmd, result.stdout, result.stderr, None)
+                self.logger.error("Check failed: %s", error)
+                return error
+            metrics = None
+            if expect_metrics:
+                metrics = parse_metrics(result.stdout)
+                if not metrics:
+                    error = _format_failure(cmd, result.stdout, result.stderr, None)
+                    self.logger.error("Check failed: %s", error)
+                    return error
+                if not _metrics_ok(metrics, self.top1_min, self.top5_min):
+                    error = _format_failure(cmd, result.stdout, result.stderr, metrics)
+                    self.logger.error("Check failed: %s", error)
+                    return error
+                self.metrics[name] = metrics
+        return None
+
+    def on_success(self, result):
+        """Create PR and update the issue on success."""
+        metrics = self._run_final_eval()
+        self._commit_and_push(metrics, success=True)
+        pr_body = self._pr_body(metrics)
+        pr_title = f"Bringup: {self.hf_model_id} ({self.system})"
+        pr_url = self.github.create_pr(pr_title, pr_body, self.branch)
+        comment = self._success_comment(metrics, pr_url)
+        self.github.comment_issue(self.issue_number, comment)
+        self.github.move_issue_status(self.issue_number, "in review")
+
+    def on_failure(self, result):
+        """Persist work and mark the issue as failed."""
+        self._commit_and_push(None, success=False)
+        comment = self._failure_comment(result)
+        self.github.comment_issue(self.issue_number, comment)
+        self.github.move_issue_status(self.issue_number, "failed")
+
+    def _check_prereqs(self):
+        self.shell.run(["python", "-c", "import ttnn"], cwd=self.repo_root)
+        self.shell.run(["tt-smi", "--help"], cwd=self.repo_root)
+        self.shell.run(["gh", "auth", "status"], cwd=self.repo_root)
+
+    def _download_weights(self):
+        script = (
+            "from huggingface_hub import snapshot_download; "
+            f"snapshot_download(repo_id={self.hf_model_id!r}, revision={self.hf_revision!r})"
+        )
+        self.shell.run(["python", "-c", script], cwd=self.repo_root)
+
+    def _reset_hardware(self):
+        self.shell.run(["tt-smi", "reset"], cwd=self.repo_root)
+
+    def _eval_command(self, mode, trace):
+        cmd = [
+            "python",
+            "scripts/run_eval.py",
+            "--mode",
+            mode,
+            "--hf-model",
+            self.hf_model_id,
+        ]
+        if self.hf_revision:
+            cmd.extend(["--revision", self.hf_revision])
+        if self.prefill_len is not None:
+            cmd.extend(["--prefill-len", str(self.prefill_len)])
+        if self.decode_len is not None:
+            cmd.extend(["--decode-len", str(self.decode_len)])
+        if self.batch is not None:
+            cmd.extend(["--batch", str(self.batch)])
+        if trace is not None:
+            cmd.extend(["--trace", str(trace)])
+        return cmd
+
+    def _run_final_eval(self):
+        cmd = self._eval_command("tt", 1)
+        result = self.shell.run(cmd, cwd=self.repo_root, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(_format_failure(cmd, result.stdout, result.stderr, None))
+        metrics = parse_metrics(result.stdout)
+        if not metrics:
+            raise RuntimeError("Final eval missing metrics JSON")
+        return metrics
+
+    def _commit_and_push(self, metrics, success):
+        status = self.shell.run(["git", "status", "--porcelain"], cwd=self.repo_root)
+        if not status.stdout.strip():
+            if success:
+                raise RuntimeError("No changes to commit after successful checks")
+            self.logger.info("No changes to commit")
+            return
+        self.shell.run(["git", "add", "-A"], cwd=self.repo_root)
+        if success:
+            trace = 1 if metrics and metrics.get("trace") else 0
+            top1 = _format_metric(metrics, "top1")
+            top5 = _format_metric(metrics, "top5")
+            message = f"Bringup {self.hf_model_id} ({self.system}) top1={top1} top5={top5} trace={trace}"
+        else:
+            message = f"WIP Bringup {self.hf_model_id} ({self.system})"
+        self.shell.run(["git", "commit", "-m", message], cwd=self.repo_root)
+        self.shell.run(["git", "push", "-u", "origin", self.branch], cwd=self.repo_root)
+        clean = self.shell.run(["git", "status", "--porcelain"], cwd=self.repo_root)
+        if clean.stdout.strip():
+            raise RuntimeError("Working tree not clean after commit")
+
+    def _pr_body(self, metrics):
+        cmds = self._repro_commands()
+        metrics_json = json.dumps(metrics, indent=2, sort_keys=True)
+        return (
+            f"Closes #{self.issue_number}\n\n"
+            "## Repro\n"
+            f"{cmds}\n\n"
+            "## Metrics\n"
+            "```json\n"
+            f"{metrics_json}\n"
+            "```\n\n"
+            "## Known limitations\n"
+            "None noted."
+        )
+
+    def _success_comment(self, metrics, pr_url):
+        summary = _metrics_summary(metrics)
+        cmds = self._repro_commands()
+        return (
+            "[yt-status]\n"
+            "status: in review\n"
+            f"run_id: {self.run_id}\n"
+            f"summary: {summary}\n"
+            f"pr: {pr_url}\n"
+            "repro:\n"
+            f"{cmds}"
+        )
+
+    def _failure_comment(self, result):
+        cmds = self._repro_commands()
+        summary = result.summary or "Bringup attempts exhausted"
+        error = result.errors or ""
+        return (
+            "[yt-status]\n"
+            "status: failed\n"
+            f"run_id: {self.run_id}\n"
+            f"summary: {summary}\n"
+            f"error: {error}\n"
+            f"branch: {self.branch}\n"
+            "repro:\n"
+            f"{cmds}"
+        )
+
+    def _repro_commands(self):
+        commands = [
+            _format_cmd(self._eval_command("hf", None)),
+            _format_cmd(self._eval_command("tt", 0)),
+            _format_cmd(self._eval_command("tt", 1)),
+        ]
+        return "\n".join(commands)
+
+
+def _build_prompt(hf_model_id, hf_revision, system):
+    rev = f" (revision {hf_revision})" if hf_revision else ""
+    return (
+        "You are working inside the yieldthought/ttnn_models repo. "
+        f"Please implement bringup for {hf_model_id}{rev} on system {system}.\n\n"
+        "Requirements:\n"
+        "- Implement or modify TTNN model code so the eval harness passes.\n"
+        "- Use BFP8 weights.\n"
+        "- Prefer SDPA ops and TT fused RoPE when available.\n"
+        "- Respect prefill vs decode conventions: prefill in DRAM interleaved, decode in L1 sharded.\n"
+        "- Only trace the decode path; ensure stable shapes and no alloc/free inside trace.\n"
+        "- Do not touch files outside this repo.\n"
+    )
+
+
+def _branch_name(issue_number, hf_model_id):
+    sanitized = sanitize_branch_name(hf_model_id)
+    return f"bringup/issue-{issue_number}-{sanitized}"
+
+
+def _metrics_ok(metrics, top1_min, top5_min):
+    return metrics.get("top1", 0) >= top1_min and metrics.get("top5", 0) >= top5_min
+
+
+def _format_failure(cmd, stdout, stderr, metrics):
+    command = _format_cmd(cmd)
+    summary = [f"Command failed: {command}"]
+    if metrics:
+        summary.append(f"metrics: {json.dumps(metrics)}")
+    if stdout:
+        summary.append("stdout tail:\n" + tail_lines(stdout))
+    if stderr:
+        summary.append("stderr tail:\n" + tail_lines(stderr))
+    return "\n".join(summary)
+
+
+def _format_cmd(cmd):
+    if isinstance(cmd, str):
+        return cmd
+    return " ".join(str(part) for part in cmd)
+
+
+def _metrics_summary(metrics):
+    top1 = _format_metric(metrics, "top1")
+    top5 = _format_metric(metrics, "top5")
+    trace = 1 if metrics.get("trace") else 0
+    return f"top1={top1} top5={top5} trace={trace}"
+
+
+def _format_metric(metrics, key):
+    value = metrics.get(key)
+    if value is None:
+        return "n/a"
+    return f"{value:.4f}"
