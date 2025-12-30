@@ -255,7 +255,10 @@ class GitHubClient:
         """Run a GraphQL query via gh api graphql."""
         cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
         for key, value in variables.items():
-            cmd.extend(["-f", f"{key}={value}"])
+            if value is None:
+                cmd.extend(["-F", f"{key}=null"])
+            else:
+                cmd.extend(["-F", f"{key}={value}"])
         return self.shell.run_json(cmd)
 
     def _ensure_project_cache(self):
