@@ -55,7 +55,39 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 # shellcheck disable=SC1090
 source "$VENV_DIR/bin/activate"
-uv pip install tt-metal tt-smi codexapi
+
+PIP_INDEX_ARGS=()
+if [ -n "${YT_PIP_INDEX_URL:-}" ]; then
+  PIP_INDEX_ARGS+=(--index-url "$YT_PIP_INDEX_URL")
+fi
+if [ -n "${YT_PIP_EXTRA_INDEX_URL:-}" ]; then
+  PIP_INDEX_ARGS+=(--extra-index-url "$YT_PIP_EXTRA_INDEX_URL")
+fi
+
+uv pip install "${PIP_INDEX_ARGS[@]}" codexapi
+
+if python -c "import ttnn" >/dev/null 2>&1; then
+  echo "ttnn import: ok"
+else
+  TT_METAL_SPEC="${YT_TT_METAL_SPEC:-tt-metal}"
+  echo "Installing tt-metal from: $TT_METAL_SPEC"
+  if ! uv pip install "${PIP_INDEX_ARGS[@]}" "$TT_METAL_SPEC"; then
+    echo "Failed to install tt-metal."
+    echo "Set YT_TT_METAL_SPEC to a wheel path or custom spec, or set YT_PIP_INDEX_URL."
+    exit 1
+  fi
+fi
+
+if command -v tt-smi >/dev/null 2>&1; then
+  echo "tt-smi: ok"
+else
+  TT_SMI_SPEC="${YT_TT_SMI_SPEC:-tt-smi}"
+  echo "Installing tt-smi from: $TT_SMI_SPEC"
+  if ! uv pip install "${PIP_INDEX_ARGS[@]}" "$TT_SMI_SPEC"; then
+    echo "Failed to install tt-smi."
+    echo "Set YT_TT_SMI_SPEC or install tt-smi separately."
+  fi
+fi
 
 echo "== Installing agents repo =="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
