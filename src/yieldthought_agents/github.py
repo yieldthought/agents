@@ -246,7 +246,11 @@ class GitHubClient:
         issues = sorted(issues, key=lambda item: item.get("createdAt") or "")
         ready = []
         for issue in issues:
-            item = self.get_issue_project_item(issue["number"], cache["project_id"])
+            try:
+                item = self.get_issue_project_item(issue["number"], cache["project_id"])
+            except RuntimeError as exc:
+                self.logger.info("Skipping issue %s: %s", issue["number"], exc)
+                continue
             if item["status"] == "ready":
                 ready.append(issue)
         return ready
