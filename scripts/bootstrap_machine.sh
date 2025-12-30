@@ -129,10 +129,14 @@ else
   echo "Run: gh auth refresh -s project"
 fi
 
-if [[ -z "${HF_TOKEN:-}" ]]; then
-  echo "HF_TOKEN not set (warning for gated models)"
+if command -v hf >/dev/null 2>&1; then
+  if hf auth whoami >/dev/null 2>&1; then
+    echo "hf auth: ok"
+  else
+    echo "hf auth: not configured (run: hf auth login)"
+  fi
 else
-  echo "HF_TOKEN: set"
+  echo "hf CLI not found"
 fi
 
 echo "Bootstrap complete"
