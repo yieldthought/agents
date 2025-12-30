@@ -57,14 +57,9 @@ fi
 source "$VENV_DIR/bin/activate"
 uv pip install tt-metal tt-smi codexapi
 
-echo "== Cloning agents repo =="
-AGENTS_DIR="${YT_AGENTS_DIR:-$HOME/yieldthought/agents}"
-if [ -d "$AGENTS_DIR/.git" ]; then
-  git -C "$AGENTS_DIR" pull --ff-only
-else
-  mkdir -p "$(dirname "$AGENTS_DIR")"
-  git clone https://github.com/yieldthought/agents.git "$AGENTS_DIR"
-fi
+echo "== Installing agents repo =="
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 uv pip install -e "$AGENTS_DIR"
 
 echo "== Checking required commands =="
