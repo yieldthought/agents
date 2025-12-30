@@ -140,3 +140,4 @@ else
 fi
 
 echo "Bootstrap complete"
+echo "Activate with: source \"$VENV_DIR/bin/activate\""
