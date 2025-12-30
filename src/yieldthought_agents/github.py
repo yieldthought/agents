@@ -276,21 +276,6 @@ class GitHubClient:
     def _fetch_project_by_number(self, number):
         query = """
         query($owner: String!, $number: Int!) {
-          organization(login: $owner) {
-            projectV2(number: $number) {
-              id
-              title
-              fields(first: 50) {
-                nodes {
-                  ... on ProjectV2SingleSelectField {
-                    id
-                    name
-                    options { id name }
-                  }
-                }
-              }
-            }
-          }
           user(login: $owner) {
             projectV2(number: $number) {
               id
@@ -309,21 +294,14 @@ class GitHubClient:
         }
         """
         data = self.graphql(query, {"owner": self.owner, "number": number})
-        org_project = data.get("data", {}).get("organization", {}).get("projectV2")
         user_project = data.get("data", {}).get("user", {}).get("projectV2")
-        project = org_project or user_project
-        if not project:
+        if not user_project:
             raise RuntimeError("Project not found")
-        return _project_cache_from_data(project)
+        return _project_cache_from_data(user_project)
 
     def _fetch_project_by_title(self, title):
         query = """
         query($owner: String!) {
-          organization(login: $owner) {
-            projectsV2(first: 50) {
-              nodes { id title }
-            }
-          }
           user(login: $owner) {
             projectsV2(first: 50) {
               nodes { id title }
@@ -332,9 +310,7 @@ class GitHubClient:
         }
         """
         data = self.graphql(query, {"owner": self.owner})
-        org_projects = data.get("data", {}).get("organization", {}).get("projectsV2", {}).get("nodes", [])
-        user_projects = data.get("data", {}).get("user", {}).get("projectsV2", {}).get("nodes", [])
-        projects = org_projects or user_projects
+        projects = data.get("data", {}).get("user", {}).get("projectsV2", {}).get("nodes", [])
         project_id = None
         for project in projects:
             if project.get("title") == title:
