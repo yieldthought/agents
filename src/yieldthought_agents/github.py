@@ -291,10 +291,27 @@ class GitHubClient:
               }
             }
           }
+          user(login: $owner) {
+            projectV2(number: $number) {
+              id
+              title
+              fields(first: 50) {
+                nodes {
+                  ... on ProjectV2SingleSelectField {
+                    id
+                    name
+                    options { id name }
+                  }
+                }
+              }
+            }
+          }
         }
         """
         data = self.graphql(query, {"owner": self.owner, "number": number})
-        project = data.get("data", {}).get("organization", {}).get("projectV2")
+        org_project = data.get("data", {}).get("organization", {}).get("projectV2")
+        user_project = data.get("data", {}).get("user", {}).get("projectV2")
+        project = org_project or user_project
         if not project:
             raise RuntimeError("Project not found")
         return _project_cache_from_data(project)
@@ -307,10 +324,17 @@ class GitHubClient:
               nodes { id title }
             }
           }
+          user(login: $owner) {
+            projectsV2(first: 50) {
+              nodes { id title }
+            }
+          }
         }
         """
         data = self.graphql(query, {"owner": self.owner})
-        projects = data.get("data", {}).get("organization", {}).get("projectsV2", {}).get("nodes", [])
+        org_projects = data.get("data", {}).get("organization", {}).get("projectsV2", {}).get("nodes", [])
+        user_projects = data.get("data", {}).get("user", {}).get("projectsV2", {}).get("nodes", [])
+        projects = org_projects or user_projects
         project_id = None
         for project in projects:
             if project.get("title") == title:
