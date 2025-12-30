@@ -69,11 +69,11 @@ uv pip install "${PIP_INDEX_ARGS[@]}" codexapi
 if python -c "import ttnn" >/dev/null 2>&1; then
   echo "ttnn import: ok"
 else
-  TT_METAL_SPEC="${YT_TT_METAL_SPEC:-tt-metal}"
-  echo "Installing tt-metal from: $TT_METAL_SPEC"
-  if ! uv pip install "${PIP_INDEX_ARGS[@]}" "$TT_METAL_SPEC"; then
-    echo "Failed to install tt-metal."
-    echo "Set YT_TT_METAL_SPEC to a wheel path or custom spec, or set YT_PIP_INDEX_URL."
+  TTNN_SPEC="${YT_TTNN_SPEC:-ttnn}"
+  echo "Installing ttnn from: $TTNN_SPEC"
+  if ! uv pip install "${PIP_INDEX_ARGS[@]}" "$TTNN_SPEC"; then
+    echo "Failed to install ttnn."
+    echo "Set YT_TTNN_SPEC to a wheel path or custom spec, or set YT_PIP_INDEX_URL."
     exit 1
   fi
 fi
