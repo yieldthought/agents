@@ -78,7 +78,7 @@ if [ -n "${YT_PIP_EXTRA_INDEX_URL:-}" ]; then
   PIP_INDEX_ARGS+=(--extra-index-url "$YT_PIP_EXTRA_INDEX_URL")
 fi
 
-uv pip install "${PIP_INDEX_ARGS[@]}" codexapi
+uv pip install "${PIP_INDEX_ARGS[@]}" codexapi huggingface_hub
 
 if python -c "import ttnn" >/dev/null 2>&1; then
   echo "ttnn import: ok"
