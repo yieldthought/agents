@@ -1,33 +1,77 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-check_cmd() {
-  local name="$1"
-  if ! command -v "$name" >/dev/null 2>&1; then
-    echo "Missing required command: $name"
-    return 1
-  fi
-}
-
-echo "== Checking required commands =="
-check_cmd python || exit 1
-check_cmd git || exit 1
-check_cmd gh || exit 1
-check_cmd codex || echo "Warning: codex CLI not found"
-check_cmd tt-smi || echo "Warning: tt-smi not found"
-
-if python -c "import codexapi" >/dev/null 2>&1; then
-  echo "codexapi: ok"
-else
-  echo "codexapi: missing (pip install -r requirements.txt)"
+echo "== Installing uv =="
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-
-if python -c "import ttnn" >/dev/null 2>&1; then
-  echo "ttnn import: ok"
-else
-  echo "ttnn import: missing"
+if ! command -v uv >/dev/null 2>&1; then
+  if [ -x "$HOME/.local/bin/uv" ]; then
+    export PATH="$HOME/.local/bin:$PATH"
+  elif [ -x "$HOME/.cargo/bin/uv" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv not found after install"
   exit 1
 fi
+
+echo "== Installing Node + Codex CLI =="
+if ! command -v npm >/dev/null 2>&1; then
+  if [ ! -d "$HOME/.nvm" ]; then
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+  fi
+  export NVM_DIR="$HOME/.nvm"
+  if [ -s "$NVM_DIR/nvm.sh" ]; then
+    # shellcheck disable=SC1090
+    . "$NVM_DIR/nvm.sh"
+  fi
+  nvm install --lts
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm not found after install"
+  exit 1
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "node not found after install"
+  exit 1
+fi
+if ! command -v codex >/dev/null 2>&1; then
+  npm install -g @openai/codex
+fi
+if ! command -v codex >/dev/null 2>&1; then
+  export PATH="$(npm bin -g):$PATH"
+fi
+if ! command -v codex >/dev/null 2>&1; then
+  echo "codex CLI not found after npm install"
+  exit 1
+fi
+
+echo "== Creating uv environment =="
+VENV_DIR="${YT_VENV_DIR:-$HOME/.venvs/yt-agents}"
+if [ ! -d "$VENV_DIR" ]; then
+  uv venv "$VENV_DIR"
+fi
+# shellcheck disable=SC1090
+source "$VENV_DIR/bin/activate"
+uv pip install tt-metal tt-smi codexapi
+
+echo "== Cloning agents repo =="
+AGENTS_DIR="${YT_AGENTS_DIR:-$HOME/yieldthought/agents}"
+if [ -d "$AGENTS_DIR/.git" ]; then
+  git -C "$AGENTS_DIR" pull --ff-only
+else
+  mkdir -p "$(dirname "$AGENTS_DIR")"
+  git clone https://github.com/yieldthought/agents.git "$AGENTS_DIR"
+fi
+uv pip install -e "$AGENTS_DIR"
+
+echo "== Checking required commands =="
+command -v python >/dev/null 2>&1 || { echo "Missing required command: python"; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "Missing required command: git"; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "Missing required command: gh"; exit 1; }
+command -v tt-smi >/dev/null 2>&1 || echo "Warning: tt-smi not found in PATH"
 
 echo "== Checking gh auth =="
 if gh auth status >/dev/null 2>&1; then
@@ -48,10 +92,6 @@ if [[ -z "${HF_TOKEN:-}" ]]; then
   echo "HF_TOKEN not set (warning for gated models)"
 else
   echo "HF_TOKEN: set"
-fi
-
-if command -v tt-smi >/dev/null 2>&1; then
-  tt-smi --help >/dev/null 2>&1 || echo "tt-smi did not respond"
 fi
 
 echo "Bootstrap complete"
