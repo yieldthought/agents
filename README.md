@@ -21,14 +21,14 @@ pip install -e .
 
 ## Environment variables
 
-Required:
-- `YT_SYSTEM` = `n150` | `n300` | `lb`
+Defaults:
+- `YT_SYSTEM` auto-detected via `tt-smi -ls` (`n150`, `n300`, `lb`) unless set
 - `YT_OWNER` (default: `yieldthought`)
 - `YT_REPO_MODELS` (default: `ttnn_models`)
 - `YT_WORKER_NAME` (default: hostname)
 
 Project config:
-- `YT_PROJECT_NUMBER` (preferred) or `YT_PROJECT_TITLE`
+- `YT_PROJECT_NUMBER` (default: `2`) or `YT_PROJECT_TITLE`
 
 HF + Codex:
 - `HF_TOKEN` (required for gated models)

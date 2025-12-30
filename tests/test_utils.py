@@ -3,7 +3,7 @@ import json
 from codexapi import TaskResult
 
 from yieldthought_agents.tasks.functional_bringup import parse_metrics, sanitize_branch_name, SetupError
-from yieldthought_agents.worker import classify_outcome, parse_issue_body
+from yieldthought_agents.worker import classify_outcome, parse_issue_body, parse_system_from_ttsmi_output
 
 
 def test_sanitize_branch_name():
@@ -42,3 +42,30 @@ def test_classify_failure():
     failure = TaskResult(False, "summary", 1, "errors", "thread")
     assert classify_outcome(None, SetupError("boom")) == "setup error"
     assert classify_outcome(failure, None) == "failed"
+
+
+def test_parse_system_n150():
+    output = """
+    Board Type   Device Series
+    Wormhole     n150 L
+    """
+    assert parse_system_from_ttsmi_output(output) == "n150"
+
+
+def test_parse_system_n300():
+    output = """
+    Board Type   Device Series
+    Wormhole     n300 L
+    """
+    assert parse_system_from_ttsmi_output(output) == "n300"
+
+
+def test_parse_system_lb():
+    output = """
+    Board Type   Device Series
+    Wormhole     n300 L
+    Wormhole     n300 L
+    Wormhole     n300 L
+    Wormhole     n300 L
+    """
+    assert parse_system_from_ttsmi_output(output) == "lb"

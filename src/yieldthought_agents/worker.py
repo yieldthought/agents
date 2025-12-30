@@ -4,6 +4,7 @@ import argparse
 import datetime
 import logging
 import os
+import re
 import socket
 import time
 import uuid
@@ -57,19 +58,22 @@ class Worker:
     def __init__(self, dry_run=False, dry_run_issue=None):
         self.dry_run = dry_run
         self.dry_run_issue = dry_run_issue
-        self.system = _env("YT_SYSTEM")
-        self.owner = _env("YT_OWNER", "yieldthought")
-        self.repo = _env("YT_REPO_MODELS", "ttnn_models")
-        self.worker_name = _env("YT_WORKER_NAME", socket.gethostname())
-        self.project_number = _env_int("YT_PROJECT_NUMBER")
+        self.logger = logging.getLogger("yieldthought.worker")
+        self.shell = Shell(logger=self.logger)
+        env_system = os.environ.get("YT_SYSTEM")
+        self.system = env_system or detect_system(self.shell)
+        if not env_system:
+            self.logger.info("Detected system: %s", self.system)
+        self.owner = os.environ.get("YT_OWNER", "yieldthought")
+        self.repo = os.environ.get("YT_REPO_MODELS", "ttnn_models")
+        self.worker_name = os.environ.get("YT_WORKER_NAME", socket.gethostname())
+        self.project_number = _env_int("YT_PROJECT_NUMBER", 2)
         self.project_title = os.environ.get("YT_PROJECT_TITLE")
         self.top1_min = _env_float("YT_TOP1_MIN", 0.90)
         self.top5_min = _env_float("YT_TOP5_MIN", 0.97)
         self.max_attempts = _env_int("YT_MAX_ATTEMPTS", 10)
         self.sleep_secs = _env_int("YT_SLEEP_SECS", 20)
-        self.tmp_root = _env("YT_TMP_ROOT")
-        self.logger = logging.getLogger("yieldthought.worker")
-        self.shell = Shell(logger=self.logger)
+        self.tmp_root = os.environ.get("YT_TMP_ROOT")
         self.github = GitHubClient(
             self.owner,
             self.repo,
@@ -206,15 +210,6 @@ class Worker:
         self.github.comment_issue(number, message)
 
 
-def _env(name, default=None):
-    value = os.environ.get(name)
-    if value:
-        return value
-    if default is None:
-        raise RuntimeError(f"Missing required env var: {name}")
-    return default
-
-
 def _env_int(name, default=None):
     value = os.environ.get(name)
     if value is None or value == "":
@@ -238,6 +233,27 @@ def _claim_comment(worker, system, run_id):
         f"run_id: {run_id}\n"
         f"timestamp: {timestamp}"
     )
+
+
+def detect_system(shell):
+    """Infer system type from tt-smi output."""
+    result = shell.run(["tt-smi", "-ls"], check=False)
+    if result.returncode != 0:
+        raise RuntimeError("Failed to run tt-smi -ls to detect YT_SYSTEM")
+    return parse_system_from_ttsmi_output(result.stdout)
+
+
+def parse_system_from_ttsmi_output(output):
+    """Parse tt-smi output and return n150, n300, or lb."""
+    text = (output or "").lower()
+    if "n150" in text:
+        return "n150"
+    n300_l = re.findall(r"\bn300\s+l\b", text)
+    if len(n300_l) >= 4:
+        return "lb"
+    if n300_l:
+        return "n300"
+    raise RuntimeError("Unable to detect system type from tt-smi output")
 
 
 def main():
