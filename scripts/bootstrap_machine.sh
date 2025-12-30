@@ -17,6 +17,20 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "== Installing gh CLI =="
+if ! command -v gh >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y gh
+  elif command -v brew >/dev/null 2>&1; then
+    brew install gh
+  else
+    echo "gh not found and no supported package manager detected."
+    echo "Install manually from https://github.com/cli/cli#installation"
+    exit 1
+  fi
+fi
+
 echo "== Installing Node + Codex CLI =="
 if ! command -v npm >/dev/null 2>&1; then
   if [ ! -d "$HOME/.nvm" ]; then
