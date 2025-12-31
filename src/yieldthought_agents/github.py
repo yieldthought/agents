@@ -100,13 +100,13 @@ class GitHubClient:
             check=False,
         )
 
-    def get_latest_claim(self, number):
-        """Return the most recent claim comment if present."""
+    def get_first_claim(self, number):
+        """Return the earliest claim comment if present."""
         query = """
         query($owner: String!, $repo: String!, $number: Int!) {
           repository(owner: $owner, name: $repo) {
             issue(number: $number) {
-              comments(last: 10) {
+              comments(first: 100) {
                 nodes {
                   author { login }
                   body
@@ -125,20 +125,18 @@ class GitHubClient:
             .get("comments", {})
             .get("nodes", [])
         )
-        last_claim = None
+        comments = sorted(comments, key=lambda item: item.get("createdAt") or "")
         for comment in comments:
             body = comment.get("body") or ""
             if "[yt-claim]" in body:
-                last_claim = comment
-        if not last_claim:
-            return None
-        run_id = _extract_claim_field(last_claim.get("body") or "", "run_id")
-        return {
-            "author": (last_claim.get("author") or {}).get("login"),
-            "body": last_claim.get("body") or "",
-            "run_id": run_id,
-            "created_at": last_claim.get("createdAt"),
-        }
+                run_id = _extract_claim_field(body, "run_id")
+                return {
+                    "author": (comment.get("author") or {}).get("login"),
+                    "body": body,
+                    "run_id": run_id,
+                    "created_at": comment.get("createdAt"),
+                }
+        return None
 
     def create_pr(self, title, body, head):
         """Create a PR and return the URL."""

@@ -2,6 +2,7 @@
 
 import argparse
 import datetime
+import json
 import logging
 import os
 import re
@@ -11,7 +12,7 @@ import uuid
 
 from .github import GitHubClient
 from .shell import Shell
-from .tasks.functional_bringup import FunctionalBringupTask, SetupError
+from .tasks.functional_bringup import FunctionalBringupTask, SetupError, sanitize_branch_name
 
 
 def parse_issue_body(body):
@@ -108,9 +109,14 @@ class Worker:
             try:
                 self.github.move_issue_status(number, "in progress")
                 self.logger.info("Status -> in progress for issue %s", number)
-                result = self._run_task(number, run_id)
-                if result and not result.success:
+                task, result = self._run_task(number)
+                if not result:
+                    raise RuntimeError("Bringup task returned no result")
+                if result.success:
+                    self._handle_success(number, run_id, task)
+                else:
                     self.logger.info("Bringup failed for issue %s (run_id=%s)", number, run_id)
+                    self._handle_failure(number, run_id, task, result)
                 return True
             except Exception as exc:
                 self.logger.exception("Issue %s setup error (run_id=%s)", number, run_id)
@@ -118,54 +124,19 @@ class Worker:
                 return True
         return False
 
-    def describe_dry_run(self):
-        """Describe the actions without calling gh or resetting hardware."""
-        issue = self.dry_run_issue if self.dry_run_issue is not None else "<issue>"
-        branch = f"bringup/issue-{issue}-<hf_model_id>"
-        self.logger.info("Dry run: would list ready issues labeled %s", self.system)
-        if self.dry_run_issue is not None:
-            self.logger.info("Dry run: selected issue %s", self.dry_run_issue)
-        else:
-            self.logger.info("Dry run: would claim the oldest ready issue")
-        self.logger.info(
-            "Dry run: gh issue list -R %s/%s --label %s --state open",
-            self.owner,
-            self.repo,
-            self.system,
-        )
-        self.logger.info(
-            "Dry run: gh issue comment %s -R %s/%s --body \"[yt-claim] ...\"",
-            issue,
-            self.owner,
-            self.repo,
-        )
-        self.logger.info("Dry run: would move status to in progress")
-        self.logger.info("Dry run: would create temp dir under %s", self.tmp_root or "<system tmp>")
-        self.logger.info("Dry run: git clone git@github.com:%s/%s.git", self.owner, self.repo)
-        self.logger.info("Dry run: git checkout -b %s", branch)
-        self.logger.info("Dry run: python -m pytest -q")
-        self.logger.info("Dry run: python scripts/run_eval.py --mode hf --hf-model <hf_model_id>")
-        self.logger.info("Dry run: python scripts/run_eval.py --mode tt --trace 0 --hf-model <hf_model_id>")
-        self.logger.info("Dry run: python scripts/run_eval.py --mode tt --trace 1 --hf-model <hf_model_id>")
-        self.logger.info("Dry run: tt-smi reset")
-        self.logger.info("Dry run: gh pr create -R %s/%s --base main --head %s", self.owner, self.repo, branch)
-        self.logger.info("Dry run: gh issue comment %s -R %s/%s --body \"[yt-status] ...\"", issue, self.owner, self.repo)
-
     def _claim_issue(self, number, run_id):
         claim = _claim_comment(self.worker_name, self.system, run_id)
         self.github.comment_issue(number, claim)
-        latest = self.github.get_latest_claim(number)
-        if not latest:
+        first_claim = self.github.get_first_claim(number)
+        if not first_claim:
             return False
-        if latest.get("author") != self.github.viewer_login():
-            self.github.delete_last_comment(number)
+        if first_claim.get("author") != self.github.viewer_login():
             return False
-        if latest.get("run_id") != run_id:
-            self.github.delete_last_comment(number)
+        if first_claim.get("run_id") != run_id:
             return False
         return True
 
-    def _run_task(self, number, run_id):
+    def _run_task(self, number):
         issue = self.github.get_issue(number)
         fields = parse_issue_body(issue.get("body") or "")
         hf_model_id = fields.get("hf_model_id")
@@ -176,27 +147,26 @@ class Worker:
         decode_len = _int_or_none(fields.get("decode_len"))
         batch = _int_or_none(fields.get("batch"))
 
+        branch = _branch_name(number, hf_model_id)
         task = FunctionalBringupTask(
-            issue_number=number,
-            run_id=run_id,
-            hf_model_id=hf_model_id,
-            hf_revision=hf_revision,
-            system=self.system,
-            top1_min=self.top1_min,
-            top5_min=self.top5_min,
-            max_attempts=self.max_attempts,
-            owner=self.owner,
-            repo=self.repo,
-            worker_name=self.worker_name,
-            tmp_root=self.tmp_root,
-            prefill_len=prefill_len,
-            decode_len=decode_len,
-            batch=batch,
-            shell=self.shell,
-            github=self.github,
-            logger=self.logger,
+            branch,
+            hf_model_id,
+            hf_revision,
+            self.system,
+            self.top1_min,
+            self.top5_min,
+            self.max_attempts,
+            self.owner,
+            self.repo,
+            self.tmp_root,
+            prefill_len,
+            decode_len,
+            batch,
+            self.shell,
+            self.logger,
         )
-        return task()
+        result = task()
+        return task, result
 
     def _handle_setup_error(self, number, run_id, exc):
         message = (
@@ -208,6 +178,31 @@ class Worker:
         )
         self.github.move_issue_status(number, "setup error")
         self.github.comment_issue(number, message)
+
+    def _handle_success(self, number, run_id, task):
+        metrics = task.final_metrics
+        if not metrics:
+            raise RuntimeError("Bringup missing final metrics")
+        self._push_branch(task)
+        commands = task.repro_commands()
+        pr_body = _pr_body(number, metrics, commands)
+        pr_title = f"Bringup: {task.hf_model_id} ({self.system})"
+        pr_url = self.github.create_pr(pr_title, pr_body, task.branch)
+        comment = _success_comment(run_id, metrics, pr_url, commands)
+        self.github.comment_issue(number, comment)
+        self.github.move_issue_status(number, "in review")
+
+    def _handle_failure(self, number, run_id, task, result):
+        self._push_branch(task)
+        commands = task.repro_commands()
+        comment = _failure_comment(run_id, result, task.branch, commands)
+        self.github.comment_issue(number, comment)
+        self.github.move_issue_status(number, "failed")
+
+    def _push_branch(self, task):
+        if not task.repo_root or not task.branch:
+            raise RuntimeError("Missing repo root or branch for push")
+        self.shell.run(["git", "push", "-u", "origin", task.branch], cwd=task.repo_root)
 
 
 def _env_int(name, default=None):
@@ -235,17 +230,77 @@ def _claim_comment(worker, system, run_id):
     )
 
 
+def _branch_name(issue_number, hf_model_id):
+    sanitized = sanitize_branch_name(hf_model_id)
+    return f"bringup/issue-{issue_number}-{sanitized}"
+
+
+def _pr_body(issue_number, metrics, commands):
+    metrics_json = json.dumps(metrics, indent=2, sort_keys=True)
+    return (
+        f"Closes #{issue_number}\n\n"
+        "## Repro\n"
+        f"{commands}\n\n"
+        "## Metrics\n"
+        "```json\n"
+        f"{metrics_json}\n"
+        "```\n\n"
+        "## Known limitations\n"
+        "None noted."
+    )
+
+
+def _success_comment(run_id, metrics, pr_url, commands):
+    summary = _metrics_summary(metrics)
+    return (
+        "[yt-status]\n"
+        "status: in review\n"
+        f"run_id: {run_id}\n"
+        f"summary: {summary}\n"
+        f"pr: {pr_url}\n"
+        "repro:\n"
+        f"{commands}"
+    )
+
+
+def _failure_comment(run_id, result, branch, commands):
+    summary = result.summary or "Bringup attempts exhausted"
+    error = result.errors or ""
+    return (
+        "[yt-status]\n"
+        "status: failed\n"
+        f"run_id: {run_id}\n"
+        f"summary: {summary}\n"
+        f"error: {error}\n"
+        f"branch: {branch}\n"
+        "repro:\n"
+        f"{commands}"
+    )
+
+
+def _metrics_summary(metrics):
+    top1 = _format_metric(metrics, "top1")
+    top5 = _format_metric(metrics, "top5")
+    trace = 1 if metrics.get("trace") else 0
+    return f"top1={top1} top5={top5} trace={trace}"
+
+
+def _format_metric(metrics, key):
+    value = metrics.get(key)
+    if value is None:
+        return "n/a"
+    return f"{value:.4f}"
+
+
 def detect_system(shell):
     """Infer system type from tt-smi output."""
     result = shell.run(["tt-smi", "-ls"], check=False)
     if result.returncode != 0:
         raise RuntimeError("Failed to run tt-smi -ls to detect YT_SYSTEM")
-    return parse_system_from_ttsmi_output(result.stdout)
+    if not result.stdout:
+        raise RuntimeError("tt-smi -ls output is empty, cannot detect system")
 
-
-def parse_system_from_ttsmi_output(output):
-    """Parse tt-smi output and return n150, n300, or lb."""
-    text = (output or "").lower()
+    text = result.stdout.lower()
     if "n150" in text:
         return "n150"
     n300_l = re.findall(r"\bn300\s+l\b", text)
@@ -253,14 +308,12 @@ def parse_system_from_ttsmi_output(output):
         return "lb"
     if n300_l:
         return "n300"
-    raise RuntimeError("Unable to detect system type from tt-smi output")
+    raise RuntimeError("Unable to detect system type from tt-smi output: %s", result.stdout)
 
 
 def main():
     """Worker CLI entrypoint."""
     parser = argparse.ArgumentParser(description="Run the TTNN bringup worker")
-    parser.add_argument("--dry-run", action="store_true", help="Print actions only")
-    parser.add_argument("--issue", type=int, help="Issue number for dry-run output")
     parser.add_argument("--once", action="store_true", help="Run a single cycle")
     args = parser.parse_args()
 
@@ -269,7 +322,7 @@ def main():
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    worker = Worker(dry_run=args.dry_run, dry_run_issue=args.issue)
+    worker = Worker()
     while True:
         did_work = worker.run_once()
         if args.once:

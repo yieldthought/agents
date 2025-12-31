@@ -209,16 +209,14 @@ timestamp:
 For each eligible issue candidate:
 1) Post claim comment:
    - `gh issue comment <ISSUE_NUMBER> -R yieldthought/ttnn_models --body "<comment>"`
-2) Verify claim is **the latest claim**:
-   - Fetch the most recent comments (prefer GraphQL `last: 10`) and find the last comment containing `[yt-claim]`.
-   - If the last `[yt-claim]` is authored by this worker and has the same `run_id`, claim succeeds.
+2) Verify claim is the **first claim**:
+   - Fetch the earliest comments (prefer GraphQL `first: 100`) and find the first comment containing `[yt-claim]`.
+   - If the first `[yt-claim]` is authored by this worker and has the same `run_id`, claim succeeds.
 3) If claim fails:
-   - Attempt to delete last comment by this user (best effort):
-     - `gh issue comment <ISSUE_NUMBER> -R yieldthought/ttnn_models --delete-last --yes`
-   - Move on to next candidate.
+   - Move on to the next candidate (do not delete comments).
 
-### 6.3 Lease timeout (optional v1)
-To prevent stuck claims, you MAY ignore claims older than `YT_CLAIM_TTL_SECS` (default 3600). This is optional for v1.
+### 6.3 Lease timeout
+Claims do not expire automatically in v1; a human can release or resolve the issue.
 
 ---
 
@@ -313,12 +311,14 @@ If it exists:
 Implementation must use `codexapi.Task` (checker-driven retries) for bringup.
 
 ### 9.1 FunctionalBringupTask (required)
+The task is local-only: it handles setup, checks, evals, and local commits. The worker owns
+GitHub side effects (push, PR, comments, status moves).
 
 #### Inputs (from issue)
-- issue number
 - hf_model_id (+ revision)
 - system label (`YT_SYSTEM`)
 - optional eval params (prefill/decode/batch)
+- branch name (worker-generated from issue number + hf_model_id)
 
 #### Steps (must follow in order)
 
@@ -375,28 +375,23 @@ If any command non-zero or metrics below thresholds -> return a detailed error s
 
 **G) Success hook**
 On success:
-- run eval again to obtain final metrics JSON
-- `git status` must be clean except intended files
-- commit message format:
+- Task: run eval again to obtain final metrics JSON
+- Task: ensure `git status` is clean except intended files
+- Task: commit message format:
   - `Bringup <hf_model_id> (<YT_SYSTEM>) top1=<x> top5=<y> trace=<0/1>`
-
-- push branch:
-  - `git push -u origin <branch>`
-
-- create PR:
+- Worker: push branch (`git push -u origin <branch>`)
+- Worker: create PR:
   - title: `Bringup: <hf_model_id> (<YT_SYSTEM>)`
   - body must include:
     - issue reference (`Closes #<issue>`)
     - how to run eval command(s)
     - metrics JSON block
     - any known limitations
-
-- comment on issue with:
+- Worker: comment on issue with:
   - PR link
   - metrics summary
   - how to reproduce
-
-- move status -> `in review`
+- Worker: move status -> `in review`
 
 **H) Failure hook**
 There are two failure classes:
@@ -407,9 +402,10 @@ There are two failure classes:
    - do NOT open PR unless you intentionally want a “fix infra” PR
 
 2) **Bringup failure** (Codex loop ran but checks couldn’t pass within attempts):
-   - move status -> `failed`
-   - commit and push the branch (so work is preserved)
-   - comment summary and reproduction steps
+   - Task: commit local changes (so work is preserved)
+   - Worker: push the branch
+   - Worker: comment summary and reproduction steps
+   - Worker: move status -> `failed`
 
 **I) Always tear down**
 - delete tempdir

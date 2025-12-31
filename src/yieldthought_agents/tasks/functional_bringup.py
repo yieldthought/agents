@@ -41,8 +41,7 @@ class FunctionalBringupTask(Task):
 
     def __init__(
         self,
-        issue_number,
-        run_id,
+        branch,
         hf_model_id,
         hf_revision,
         system,
@@ -51,17 +50,14 @@ class FunctionalBringupTask(Task):
         max_attempts,
         owner,
         repo,
-        worker_name,
         tmp_root,
         prefill_len,
         decode_len,
         batch,
         shell,
-        github,
         logger=None,
     ):
-        self.issue_number = issue_number
-        self.run_id = run_id
+        self.branch = branch
         self.hf_model_id = hf_model_id
         self.hf_revision = hf_revision
         self.system = system
@@ -69,18 +65,18 @@ class FunctionalBringupTask(Task):
         self.top5_min = top5_min
         self.owner = owner
         self.repo = repo
-        self.worker_name = worker_name
         self.tmp_root = tmp_root
         self.prefill_len = prefill_len
         self.decode_len = decode_len
         self.batch = batch
         self.shell = shell
-        self.github = github
         self.logger = logger or logging.getLogger(__name__)
         self.repo_root = None
         self.tmp_dir = None
-        self.branch = None
         self.metrics = {}
+        self.final_metrics = None
+        self.did_commit = False
+        self.commit_sha = None
 
         prompt = _build_prompt(hf_model_id, hf_revision, system)
         super().__init__(prompt, max_attempts=max_attempts, cwd=None)
@@ -95,7 +91,8 @@ class FunctionalBringupTask(Task):
         self.cwd = self.repo_root
         self.agent.cwd = self.repo_root
 
-        self.branch = _branch_name(self.issue_number, self.hf_model_id)
+        if not self.branch:
+            raise SetupError("Missing branch name for bringup task")
         remote = self.shell.run(
             ["git", "ls-remote", "--heads", "origin", self.branch],
             cwd=self.repo_root,
@@ -142,22 +139,14 @@ class FunctionalBringupTask(Task):
         return None
 
     def on_success(self, result):
-        """Create PR and update the issue on success."""
+        """Finalize local changes on success."""
         metrics = self._run_final_eval()
-        self._commit_and_push(metrics, success=True)
-        pr_body = self._pr_body(metrics)
-        pr_title = f"Bringup: {self.hf_model_id} ({self.system})"
-        pr_url = self.github.create_pr(pr_title, pr_body, self.branch)
-        comment = self._success_comment(metrics, pr_url)
-        self.github.comment_issue(self.issue_number, comment)
-        self.github.move_issue_status(self.issue_number, "in review")
+        self.final_metrics = metrics
+        self._commit_work(metrics, success=True)
 
     def on_failure(self, result):
-        """Persist work and mark the issue as failed."""
-        self._commit_and_push(None, success=False)
-        comment = self._failure_comment(result)
-        self.github.comment_issue(self.issue_number, comment)
-        self.github.move_issue_status(self.issue_number, "failed")
+        """Persist local changes after bringup failure."""
+        self._commit_work(None, success=False)
 
     def _check_prereqs(self):
         self.shell.run(["python", "-c", "import ttnn"], cwd=self.repo_root)
@@ -205,7 +194,7 @@ class FunctionalBringupTask(Task):
             raise RuntimeError("Final eval missing metrics JSON")
         return metrics
 
-    def _commit_and_push(self, metrics, success):
+    def _commit_work(self, metrics, success):
         status = self.shell.run(["git", "status", "--porcelain"], cwd=self.repo_root)
         if not status.stdout.strip():
             if success:
@@ -221,55 +210,17 @@ class FunctionalBringupTask(Task):
         else:
             message = f"WIP Bringup {self.hf_model_id} ({self.system})"
         self.shell.run(["git", "commit", "-m", message], cwd=self.repo_root)
-        self.shell.run(["git", "push", "-u", "origin", self.branch], cwd=self.repo_root)
+        self.did_commit = True
+        self.commit_sha = self.shell.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.repo_root,
+        ).stdout.strip()
         clean = self.shell.run(["git", "status", "--porcelain"], cwd=self.repo_root)
         if clean.stdout.strip():
             raise RuntimeError("Working tree not clean after commit")
 
-    def _pr_body(self, metrics):
-        cmds = self._repro_commands()
-        metrics_json = json.dumps(metrics, indent=2, sort_keys=True)
-        return (
-            f"Closes #{self.issue_number}\n\n"
-            "## Repro\n"
-            f"{cmds}\n\n"
-            "## Metrics\n"
-            "```json\n"
-            f"{metrics_json}\n"
-            "```\n\n"
-            "## Known limitations\n"
-            "None noted."
-        )
-
-    def _success_comment(self, metrics, pr_url):
-        summary = _metrics_summary(metrics)
-        cmds = self._repro_commands()
-        return (
-            "[yt-status]\n"
-            "status: in review\n"
-            f"run_id: {self.run_id}\n"
-            f"summary: {summary}\n"
-            f"pr: {pr_url}\n"
-            "repro:\n"
-            f"{cmds}"
-        )
-
-    def _failure_comment(self, result):
-        cmds = self._repro_commands()
-        summary = result.summary or "Bringup attempts exhausted"
-        error = result.errors or ""
-        return (
-            "[yt-status]\n"
-            "status: failed\n"
-            f"run_id: {self.run_id}\n"
-            f"summary: {summary}\n"
-            f"error: {error}\n"
-            f"branch: {self.branch}\n"
-            "repro:\n"
-            f"{cmds}"
-        )
-
-    def _repro_commands(self):
+    def repro_commands(self):
+        """Return commands for reproducing evals."""
         commands = [
             _format_cmd(self._eval_command("hf", None)),
             _format_cmd(self._eval_command("tt", 0)),
@@ -291,11 +242,6 @@ def _build_prompt(hf_model_id, hf_revision, system):
         "- Only trace the decode path; ensure stable shapes and no alloc/free inside trace.\n"
         "- Do not touch files outside this repo.\n"
     )
-
-
-def _branch_name(issue_number, hf_model_id):
-    sanitized = sanitize_branch_name(hf_model_id)
-    return f"bringup/issue-{issue_number}-{sanitized}"
 
 
 def _metrics_ok(metrics, top1_min, top5_min):
