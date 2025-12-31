@@ -110,7 +110,6 @@ Add two issue templates under `.github/ISSUE_TEMPLATE/` in `ttnn_models`.
 #### Template A: `bringup_model.yml`
 Required fields in issue body (machine-parsable):
 - `hf_model_id: <org/name>`
-- `hf_revision: <optional>`
 - `architecture: <optional>`
 - `notes: <optional>`
 - `prefill_len: <optional int>`
@@ -122,7 +121,6 @@ Also require label: one of `n150`/`n300`/`lb`.
 #### Template B: `new_model_candidate.yml`
 Required fields:
 - `hf_model_id`
-- `hf_revision`
 - `notes`
 
 Used by `AddModelTask`.
@@ -315,7 +313,7 @@ The task is local-only: it handles setup, checks, evals, and local commits. The 
 GitHub side effects (push, PR, comments, status moves).
 
 #### Inputs (from issue)
-- hf_model_id (+ revision)
+- hf_model_id
 - system label (`YT_SYSTEM`)
 - optional eval params (prefill/decode/batch)
 - branch name (worker-generated from issue number + hf_model_id)
@@ -362,7 +360,7 @@ GitHub side effects (push, PR, comments, status moves).
 In `check()` run (from repo root):
 1) `python -m pytest -q` (fast gate; can be small test set in v1)
 2) HF-only eval:
-   - `python scripts/run_eval.py --mode hf --hf-model <id> [--revision ...] --prefill-len ... --decode-len ... --batch ...`
+   - `python scripts/run_eval.py --mode hf --hf-model <id> --prefill-len ... --decode-len ... --batch ...`
 3) TT eval, trace off:
    - `python scripts/run_eval.py --mode tt --trace 0 ...`
 4) TT eval, trace on:
@@ -454,7 +452,6 @@ Runs periodically (e.g. once every N hours), does:
 ### 10.1 Single entrypoint: `scripts/run_eval.py`
 Must accept:
 - `--hf-model <id>` (required)
-- `--revision <rev>` (optional)
 - `--mode hf|tt` (required)
 - `--trace 0|1` (optional; only valid for `--mode tt`)
 - `--prefill-len <int>` (default: 128)

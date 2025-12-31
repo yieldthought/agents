@@ -1,0 +1,33 @@
+Good morning! Today we're going to be writing a straightforward implementation of {HF_MODEL} in ttnn to show people how to bring it up properly. Take your time, explore the other models and their MODEL_BRINGUP.md files, especially read every line of the example files in models/llama32_1b/n150/functional/* - we have plenty of time so really make sure you grok this new framework deeply before starting. If you want to look up ttnn functions, you can find the documentation for them in docs/ttnn.md.
+
+Our goal is to write a single file in models/{HF_MODEL}/{SYSTEM}/functional/model.py that will load {HF_MODEL} from huggingface, convert the weights to ttnn, and provide a model class that matches the API used by HuggingFace LLM model classes so that it can be used transparently as a drop-in for those. See the provided eval.py code in this repository which will load and use your class via this API for an example.
+
+You can run eval.py to test your model with:
+
+```python
+python eval.py models/{HF_MODEL}/{SYSTEM}/functional/model.py
+```
+
+This will load your model and compare it to the huggingface reference version running on CPU. It will do so under a teacher-forcing setup and will provide you with top-1 and top-5 accuracy scores. If these are not {TOP_1_TARGET} and {TOP_5_TARGET} respectively your model probably has a bug which you should investigate and fix.
+
+We would like your model.py file to be simple and clean. The model only has to be functional, no need for multi-device or sharding at this stage. DRAM interleaved is fine. See models/llama32_1b/n150/functional/model.py for an example of the code we want to see.
+
+Generally you can and should use the ttnn.bfloat8_b format for weights and ttnn.bfloat16 for activations. For some models you may need to tweak this to achieve your accuracy targets but the vast majority of models run fine with these settings.
+
+Read the example carefully to be inspired by which ttnn functions are available. For example, we definitely want to use the ttnn scalar dot product function instead of implementing attention by hand. Other models may also give inspiration, as well as the ttnn documentation provided in docs/ttnn.md.
+
+Be careful of the RoPE format - the huggingface format differs from the meta format. This model is almost certainly following the huggingface format - even the meta models on huggingface do - which means avoiding using ttnn.experimental.rotary_embedding_llama which is meta-format-specific and instead using ttnn.experimental.rotary_embedding which uses huggingface format. If in doubt read the huggingface code to check which one is appropriate!
+
+Test your model carefully. If you have correctness issues, I recommend swapping out parts of your code for the reference implementation (e.g. write a wrapper that converts ttnn tensors back to torch, uses the huggingface module, then converts back to ttnn) to isolate which part is causing the bad output. This is generally faster than trying to follow through the PCC layer by layer and the code isn't that complex to manually bisect in this way. You should only do this for the debugging - we really need the full forward pass to be entirely in ttnn without any fallbacks to torch.
+
+Bear in mind that we want to wrap the model's forward pass in ttnn.capture_trace and ttnn_execute_trace. For this, *all* the ttnn.from_torch calls must be *outside* the trace context. This means we can't use from_torch within the forward pass - all such uses must be up at the model level so that tracing can be added inside the top-level model class later.
+
+You can run your model directly on this machine. If your wormhole device gets into a bad state and does not init cleanly you can reset it with 'tt-smi -r'
+
+Finally, it would be awesome if you produced a MODEL_BRINGUP.md file that describes everything you learn during your process - ttnn functions, conventions, approches, gotchas, debugging ideas that worked and so on - anything that you're like "wow it would have saved me a lot of time if I'd known that!"
+
+Above all, take your time and have fun!
+
+Targets:
+- Model runs correctly via `python eval.py models/{HF_MODEL}/n150/functional/model.py` with Top-1 >= {TOP_1_TARGET} and Top-5 >= {TOP_5_TARGET}
+- No torch operations or ttnn.from_torch/ttnn.as_tensor used inside the forward pass

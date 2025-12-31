@@ -14,7 +14,6 @@ def test_sanitize_branch_name():
 def test_parse_issue_body_fields():
     body = """
     hf_model_id: meta-llama/Llama-3.1-8B-Instruct
-    hf_revision: main
     prefill_len: 128
     decode_len: 32
     batch: 2
@@ -22,7 +21,6 @@ def test_parse_issue_body_fields():
     """
     fields = parse_issue_body(body)
     assert fields["hf_model_id"] == "meta-llama/Llama-3.1-8B-Instruct"
-    assert fields["hf_revision"] == "main"
     assert fields["prefill_len"] == "128"
     assert fields["decode_len"] == "32"
     assert fields["batch"] == "2"

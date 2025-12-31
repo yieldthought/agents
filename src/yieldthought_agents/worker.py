@@ -142,7 +142,6 @@ class Worker:
         hf_model_id = fields.get("hf_model_id")
         if not hf_model_id:
             raise SetupError("Missing hf_model_id in issue body")
-        hf_revision = fields.get("hf_revision") or None
         prefill_len = _int_or_none(fields.get("prefill_len"))
         decode_len = _int_or_none(fields.get("decode_len"))
         batch = _int_or_none(fields.get("batch"))
@@ -151,7 +150,6 @@ class Worker:
         task = FunctionalBringupTask(
             branch,
             hf_model_id,
-            hf_revision,
             self.system,
             self.top1_min,
             self.top5_min,

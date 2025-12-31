@@ -43,7 +43,6 @@ class FunctionalBringupTask(Task):
         self,
         branch,
         hf_model_id,
-        hf_revision,
         system,
         top1_min,
         top5_min,
@@ -59,7 +58,6 @@ class FunctionalBringupTask(Task):
     ):
         self.branch = branch
         self.hf_model_id = hf_model_id
-        self.hf_revision = hf_revision
         self.system = system
         self.top1_min = top1_min
         self.top5_min = top5_min
@@ -78,7 +76,7 @@ class FunctionalBringupTask(Task):
         self.did_commit = False
         self.commit_sha = None
 
-        prompt = _build_prompt(hf_model_id, hf_revision, system)
+        prompt = _build_prompt(hf_model_id, system, top1_min, top5_min)
         super().__init__(prompt, max_attempts=max_attempts, cwd=None)
 
     def set_up(self):
@@ -156,7 +154,7 @@ class FunctionalBringupTask(Task):
     def _download_weights(self):
         script = (
             "from huggingface_hub import snapshot_download; "
-            f"snapshot_download(repo_id={self.hf_model_id!r}, revision={self.hf_revision!r})"
+            f"snapshot_download(repo_id={self.hf_model_id!r})"
         )
         self.shell.run(["python", "-c", script], cwd=self.repo_root)
 
@@ -172,8 +170,6 @@ class FunctionalBringupTask(Task):
             "--hf-model",
             self.hf_model_id,
         ]
-        if self.hf_revision:
-            cmd.extend(["--revision", self.hf_revision])
         if self.prefill_len is not None:
             cmd.extend(["--prefill-len", str(self.prefill_len)])
         if self.decode_len is not None:
@@ -229,19 +225,30 @@ class FunctionalBringupTask(Task):
         return "\n".join(commands)
 
 
-def _build_prompt(hf_model_id, hf_revision, system):
-    rev = f" (revision {hf_revision})" if hf_revision else ""
-    return (
-        "You are working inside the yieldthought/ttnn_models repo. "
-        f"Please implement bringup for {hf_model_id}{rev} on system {system}.\n\n"
-        "Requirements:\n"
-        "- Implement or modify TTNN model code so the eval harness passes.\n"
-        "- Use BFP8 weights.\n"
-        "- Prefer SDPA ops and TT fused RoPE when available.\n"
-        "- Respect prefill vs decode conventions: prefill in DRAM interleaved, decode in L1 sharded.\n"
-        "- Only trace the decode path; ensure stable shapes and no alloc/free inside trace.\n"
-        "- Do not touch files outside this repo.\n"
-    )
+def _build_prompt(hf_model_id, system, top1_min, top5_min):
+    template = _load_prompt_template()
+    base = _render_prompt(template, hf_model_id, system, top1_min, top5_min)
+    return base
+
+
+def _load_prompt_template():
+    """Load the base bringup prompt template."""
+    path = os.path.join(os.path.dirname(__file__), "functional_bringup.txt")
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _render_prompt(template, hf_model_id, system, top1_min, top5_min):
+    """Render the prompt template placeholders."""
+    replacements = {
+        "{HF_MODEL}": hf_model_id,
+        "{SYSTEM}": system,
+        "{TOP_1_TARGET}": str(top1_min),
+        "{TOP_5_TARGET}": str(top5_min),
+    }
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
 
 
 def _metrics_ok(metrics, top1_min, top5_min):
