@@ -21,7 +21,7 @@ Be careful of the RoPE format - the huggingface format differs from the meta for
 
 Test your model carefully. If you have correctness issues, I recommend swapping out parts of your code for the reference implementation (e.g. write a wrapper that converts ttnn tensors back to torch, uses the huggingface module, then converts back to ttnn) to isolate which part is causing the bad output. This is generally faster than trying to follow through the PCC layer by layer and the code isn't that complex to manually bisect in this way. You should only do this for the debugging - we really need the full forward pass to be entirely in ttnn without any fallbacks to torch.
 
-Bear in mind that we want to wrap the model's core TTNN compute path in ttnn.capture_trace and ttnn_execute_trace. For this, *all* the ttnn.from_torch calls must be *outside* the trace context. Keep host-to-device conversions in a small input-prep helper so the traced region only sees TTNN tensors.
+Bear in mind that we want to wrap the model's core TTNN compute path using ttnn.begin_trace_capture/end_trace_capture with execute_trace/release_trace. For this, *all* the ttnn.from_torch calls must be *outside* the trace context. Keep host-to-device conversions in a small input-prep helper so the traced region only sees TTNN tensors.
 
 You can run your model directly on this machine. If your wormhole device gets into a bad state and does not init cleanly you can reset it with 'tt-smi -r'
 
