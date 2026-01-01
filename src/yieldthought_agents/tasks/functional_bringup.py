@@ -159,7 +159,7 @@ class FunctionalBringupTask(Task):
         self.shell.run(["python", "-c", script], cwd=self.repo_root)
 
     def _reset_hardware(self):
-        self.shell.run(["tt-smi", "reset"], cwd=self.repo_root)
+        self.shell.run(["tt-smi", "-r"], cwd=self.repo_root)
 
     def _eval_command(self, mode, trace):
         cmd = [
