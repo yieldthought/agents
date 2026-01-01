@@ -31,7 +31,7 @@ if ! command -v gh >/dev/null 2>&1; then
   fi
 fi
 
-echo "== Installing Node + Codex CLI =="
+echo "== Installing Node + Updating Codex CLI =="
 if ! command -v npm >/dev/null 2>&1; then
   if [ ! -d "$HOME/.nvm" ]; then
     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
@@ -51,9 +51,7 @@ if ! command -v node >/dev/null 2>&1; then
   echo "node not found after install"
   exit 1
 fi
-if ! command -v codex >/dev/null 2>&1; then
-  npm install -g @openai/codex
-fi
+npm install -g @openai/codex
 if ! command -v codex >/dev/null 2>&1; then
   export PATH="$(npm bin -g):$PATH"
 fi
@@ -141,3 +139,5 @@ fi
 
 echo "Bootstrap complete"
 echo "Activate with: source \"$VENV_DIR/bin/activate\""
+echo "Load nvm with: export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\""
+echo "Then: nvm use --lts"
