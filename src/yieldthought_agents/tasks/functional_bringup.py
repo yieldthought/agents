@@ -36,6 +36,11 @@ def parse_metrics(output):
     return None
 
 
+def _keep_tmp_enabled():
+    value = os.environ.get("YT_KEEP_TMP", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
 class FunctionalBringupTask(Task):
     """Bring up a model with checker-driven retries."""
 
@@ -54,6 +59,7 @@ class FunctionalBringupTask(Task):
         decode_len,
         batch,
         shell,
+        keep_tmp=None,
         logger=None,
     ):
         self.branch = branch
@@ -68,6 +74,9 @@ class FunctionalBringupTask(Task):
         self.decode_len = decode_len
         self.batch = batch
         self.shell = shell
+        if keep_tmp is None:
+            keep_tmp = _keep_tmp_enabled()
+        self.keep_tmp = keep_tmp
         self.logger = logger or logging.getLogger(__name__)
         self.repo_root = None
         self.tmp_dir = None
@@ -118,6 +127,10 @@ class FunctionalBringupTask(Task):
 
     def tear_down(self):
         """Clean up the temp directory."""
+        if self.keep_tmp:
+            if self.tmp_dir:
+                self.logger.info("Keeping temp repo at %s", self.tmp_dir)
+            return
         if self.tmp_dir and os.path.isdir(self.tmp_dir):
             shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
