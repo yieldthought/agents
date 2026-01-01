@@ -1,6 +1,6 @@
-Good morning! Today we're going to be writing a straightforward implementation of {HF_MODEL} in ttnn to show people how to bring it up properly. Take your time, explore the other models and their MODEL_BRINGUP.md files, especially read every line of the example files in models/meta/llama32_1b/n150/functional/* - we have plenty of time so really make sure you grok this new framework deeply before starting. If you want to look up ttnn functions, refer to the tt-metal `ttnn/` package or examples in `tt-metal/models/tt_transformers/`.
+Good morning! Today we're going to be writing a straightforward implementation of {HF_MODEL} in ttnn to show people how to bring it up properly. Take your time, explore the other models and their MODEL_BRINGUP.md files, especially read every line of the example files in models/meta-llama/Llama-3.2-1B/n150/functional/* - we have plenty of time so really make sure you grok this new framework deeply before starting. If you want to look up ttnn functions, refer to the tt-metal `ttnn/` package or examples in `tt-metal/models/tt_transformers/`.
 
-Our goal is to write a single file in models/<org>/<model_name>/{SYSTEM}/functional/model.py that will load {HF_MODEL} from HuggingFace, convert the weights to ttnn, and provide a model class that matches the API used by HuggingFace LLM model classes so it can be used transparently as a drop-in. Add or update models/registry.json so that the HF model id maps to your chosen local directory (see the llama32_1b entry). The eval harness in this repository loads the model using that registry. Note that the bringup automation uses scripts/run_eval.py, which should print a line starting with YT_METRICS= followed by JSON.
+Our goal is to write a single file in models/<org>/<model_name>/{SYSTEM}/functional/model.py that will load {HF_MODEL} from HuggingFace, convert the weights to ttnn, and provide a model class that matches the API used by HuggingFace LLM model classes so it can be used transparently as a drop-in. The model directory should match the HF model id, for example `models/meta-llama/Llama-3.2-1B/...`. Note that the bringup automation uses scripts/run_eval.py, which should print a line starting with YT_METRICS= followed by JSON.
 
 You can run eval.py to test your model with:
 
@@ -11,7 +11,7 @@ python eval.py <path-to-model.py>
 This will load your model and compare it to the huggingface reference version running on CPU. It will do so under a teacher-forcing setup and will provide you with top-1 and top-5 accuracy scores. If these are not {TOP_1_TARGET} and {TOP_5_TARGET} respectively your model probably has a bug which you should investigate and fix.
 For automation, scripts/run_eval.py should wrap eval.py and emit YT_METRICS JSON so checks can parse results.
 
-We would like your model.py file to be simple and clean. The model only has to be functional, no need for multi-device or sharding at this stage. DRAM interleaved is fine. See models/meta/llama32_1b/n150/functional/model.py for an example of the code we want to see.
+We would like your model.py file to be simple and clean. The model only has to be functional, no need for multi-device or sharding at this stage. DRAM interleaved is fine. See models/meta-llama/Llama-3.2-1B/n150/functional/model.py for an example of the code we want to see.
 
 Generally you can and should use the ttnn.bfloat8_b format for weights and ttnn.bfloat16 for activations. For some models you may need to tweak this to achieve your accuracy targets but the vast majority of models run fine with these settings.
 
