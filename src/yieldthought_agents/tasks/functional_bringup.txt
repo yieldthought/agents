@@ -14,6 +14,7 @@ For automation, scripts/run_eval.py should wrap eval.py and emit YT_METRICS JSON
 We would like your model.py file to be simple and clean. The model only has to be functional, no need for multi-device or sharding at this stage. DRAM interleaved is fine. See models/meta-llama/Llama-3.2-1B/n150/functional/model.py for an example of the code we want to see.
 
 Use doc/ttnn.md for shape conventions, call patterns, and constraints. Verify padded shapes and GQA head math early.
+When inspecting model shapes, prefer `AutoConfig` and `safetensors.safe_open` to avoid loading the full HF model (slow and memory-heavy). Only load the full model for reference evals.
 
 Generally you can and should use the ttnn.bfloat8_b format for weights and ttnn.bfloat16 for activations. For some models you may need to tweak this to achieve your accuracy targets but the vast majority of models run fine with these settings.
 
