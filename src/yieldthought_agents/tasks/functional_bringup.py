@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import tempfile
 
 from codexapi import Task
@@ -132,12 +131,9 @@ class FunctionalBringupTask(Task):
 
     def tear_down(self):
         """Clean up the temp directory."""
-        if self.keep_tmp:
-            if self.tmp_dir:
-                self.logger.info("Keeping temp repo at %s", self.tmp_dir)
-            return
-        if self.tmp_dir and os.path.isdir(self.tmp_dir):
-            shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        if self.tmp_dir:
+            self.logger.info("Keeping temp repo at %s", self.tmp_dir)
+        return
 
     def check(self):
         """Run tests and evals; return an error string if any fail."""
