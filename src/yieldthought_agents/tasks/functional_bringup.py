@@ -81,7 +81,16 @@ class FunctionalBringupTask(Task):
             "YT_CODEX_FLAGS",
             "--dangerously-bypass-approvals-and-sandbox",
         )
-        super().__init__(prompt, max_attempts=max_attempts, cwd=None, flags=codex_flags or None)
+        full_auto = True
+        if codex_flags and "dangerously-bypass-approvals-and-sandbox" in codex_flags:
+            full_auto = False
+        super().__init__(
+            prompt,
+            max_attempts=max_attempts,
+            cwd=None,
+            flags=codex_flags or None,
+            full_auto=full_auto,
+        )
 
     def set_up(self):
         """Prepare workspace, download weights, and reset hardware."""
