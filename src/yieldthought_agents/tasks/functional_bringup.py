@@ -77,10 +77,7 @@ class FunctionalBringupTask(Task):
         self.commit_sha = None
 
         prompt = _build_prompt(hf_model_id, system, top1_min, top5_min)
-        codex_flags = os.environ.get(
-            "YT_CODEX_FLAGS",
-            "--dangerously-bypass-approvals-and-sandbox",
-        )
+        codex_flags = os.environ.get("YT_CODEX_FLAGS", "-s danger-full-access")
         full_auto = True
         if codex_flags and "dangerously-bypass-approvals-and-sandbox" in codex_flags:
             full_auto = False
