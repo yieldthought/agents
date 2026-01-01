@@ -169,6 +169,8 @@ class FunctionalBringupTask(Task):
             mode,
             "--hf-model",
             self.hf_model_id,
+            "--system",
+            self.system,
         ]
         if self.prefill_len is not None:
             cmd.extend(["--prefill-len", str(self.prefill_len)])
