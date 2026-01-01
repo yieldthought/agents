@@ -41,6 +41,11 @@ def _keep_tmp_enabled():
     return value not in {"0", "false", "no", "off"}
 
 
+def _local_mode_enabled():
+    value = os.environ.get("YT_LOCAL_MODE", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 class FunctionalBringupTask(Task):
     """Bring up a model with checker-driven retries."""
 
@@ -136,30 +141,41 @@ class FunctionalBringupTask(Task):
 
     def check(self):
         """Run tests and evals; return an error string if any fail."""
+        self.metrics = {}
         steps = [
             ("pytest", ["python", "-m", "pytest", "-q"], False),
             ("hf", self._eval_command("hf", None), True),
             ("tt-trace-off", self._eval_command("tt", 0), True),
             ("tt-trace-on", self._eval_command("tt", 1), True),
         ]
+        errors = []
         for name, cmd, expect_metrics in steps:
             result = self.shell.run(cmd, cwd=self.repo_root, check=False)
             if result.returncode != 0:
                 error = _format_failure(cmd, result.stdout, result.stderr, None)
                 self.logger.error("Check failed: %s", error)
-                return error
+                errors.append(error)
+                continue
             metrics = None
             if expect_metrics:
                 metrics = parse_metrics(result.stdout)
                 if not metrics:
                     error = _format_failure(cmd, result.stdout, result.stderr, None)
                     self.logger.error("Check failed: %s", error)
-                    return error
+                    errors.append(error)
+                    continue
+                self.metrics[name] = metrics
                 if not _metrics_ok(metrics, self.top1_min, self.top5_min):
                     error = _format_failure(cmd, result.stdout, result.stderr, metrics)
                     self.logger.error("Check failed: %s", error)
-                    return error
-                self.metrics[name] = metrics
+                    errors.append(error)
+
+        agent_error = self._run_agent_check()
+        if agent_error:
+            errors.append(agent_error)
+
+        if errors:
+            return "\n\n".join(errors)
         return None
 
     def on_success(self, result):
@@ -175,6 +191,9 @@ class FunctionalBringupTask(Task):
     def _check_prereqs(self):
         self.shell.run(["python", "-c", "import ttnn"], cwd=self.repo_root)
         self.shell.run(["tt-smi", "--help"], cwd=self.repo_root)
+        if _local_mode_enabled():
+            self.logger.info("YT_LOCAL_MODE enabled; skipping gh auth check")
+            return
         self.shell.run(["gh", "auth", "status"], cwd=self.repo_root)
 
     def _download_weights(self):
@@ -217,6 +236,31 @@ class FunctionalBringupTask(Task):
         if not metrics:
             raise RuntimeError("Final eval missing metrics JSON")
         return metrics
+
+    def _agent_check_prompt(self):
+        return (
+            "Review the bringup implementation in this repo for the model "
+            f"{self.hf_model_id}. Focus on tensor shapes, padded shapes, QKV "
+            "splits, RoPE format, cache usage, and TTNN op constraints. "
+            "Follow the guidance in doc/ttnn.md and the task prompt, and "
+            "ensure the code matches the spirit of the bringup flow. "
+            "Do not edit files; just review.\n\n"
+            "Output format:\n"
+            "CHECK=PASS\n"
+            "or\n"
+            "CHECK=FAIL\n"
+            "then a short list of issues with file paths and line numbers."
+        )
+
+    def _run_agent_check(self):
+        try:
+            output = self.agent(self._agent_check_prompt())
+        except Exception as exc:
+            return f"Agent check error: {exc}"
+        ok, status = _parse_agent_check(output)
+        if ok:
+            return None
+        return "Agent check failed:\n" + status
 
     def _commit_work(self, metrics, success):
         status = self.shell.run(["git", "status", "--porcelain"], cwd=self.repo_root)
@@ -313,3 +357,16 @@ def _format_metric(metrics, key):
     if value is None:
         return "n/a"
     return f"{value:.4f}"
+
+
+def _parse_agent_check(output):
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("check="):
+            status = stripped.split("=", 1)[1].strip().lower()
+            if status == "pass":
+                return True, output
+            if status == "fail":
+                return False, output
+            return False, f"Agent check returned unknown status: {stripped}\n{output}"
+    return False, "Agent check missing CHECK=PASS/FAIL line.\n" + output
