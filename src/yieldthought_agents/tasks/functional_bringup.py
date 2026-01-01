@@ -77,7 +77,11 @@ class FunctionalBringupTask(Task):
         self.commit_sha = None
 
         prompt = _build_prompt(hf_model_id, system, top1_min, top5_min)
-        super().__init__(prompt, max_attempts=max_attempts, cwd=None)
+        codex_flags = os.environ.get(
+            "YT_CODEX_FLAGS",
+            "--dangerously-bypass-approvals-and-sandbox",
+        )
+        super().__init__(prompt, max_attempts=max_attempts, cwd=None, flags=codex_flags or None)
 
     def set_up(self):
         """Prepare workspace, download weights, and reset hardware."""
